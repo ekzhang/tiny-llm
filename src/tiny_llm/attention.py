@@ -68,13 +68,34 @@ def causal_mask(L: int, S: int, dtype: mx.Dtype) -> mx.array:
 
 
 def scaled_dot_product_attention_grouped(
-    query: mx.array,
-    key: mx.array,
-    value: mx.array,
+    query: mx.array,  # [N.., H_q, L_q, D]
+    key: mx.array,  # [N.., H, L_k, D]
+    value: mx.array,  # [N.., H, L_k, D]
     scale: float | None = None,
     mask: mx.array | str | None = None,
 ) -> mx.array:
-    pass
+    *B, H_q, L_q, D = query.shape
+    H, L_k, D = key.shape[-3:]
+
+    if scale is None:
+        scale = mx.rsqrt(D)
+
+    assert H_q % H == 0, f"query heads {H_q} must be multiple of k/v heads {H}"
+    G = H_q // H
+
+    query = query.reshape(*B, H, G, L_q, D)
+    key = key.reshape(*B, H, 1, L_k, D)
+    value = value.reshape(*B, H, 1, L_k, D)
+
+    # [N.., H, G, L_q, L_k]
+    attn_logits = mx.matmul(query, key.swapaxes(-2, -1)) * scale
+    if mask is not None:
+        if isinstance(mask, str) and mask == "causal":
+            mask = causal_mask(L_q, L_k, attn_logits.dtype)
+        attn_logits += mask.reshape(attn_logits.shape)
+    attn_weights = softmax(attn_logits, axis=-1)
+
+    return mx.matmul(attn_weights, value).reshape(*B, H_q, L_q, D)
 
 
 def flash_attention(
