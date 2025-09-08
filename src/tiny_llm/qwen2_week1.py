@@ -109,22 +109,111 @@ class Qwen2TransformerBlock:
         max_seq_len: int = 32768,
         theta: int = 1000000,
     ):
-        pass
+        self.input_layernorm = RMSNorm(hidden_size, w_input_layernorm, rms_norm_eps)
+        self.gqa = Qwen2MultiHeadAttention(
+            hidden_size=hidden_size,
+            num_heads=num_attention_heads,
+            num_kv_heads=num_kv_heads,
+            wq=wq,
+            wk=wk,
+            wv=wv,
+            wo=wo,
+            bq=bq,
+            bk=bk,
+            bv=bv,
+            max_seq_len=max_seq_len,
+            theta=theta,
+        )
+        self.post_attention_layernorm = RMSNorm(
+            hidden_size, w_post_attention_layernorm, rms_norm_eps
+        )
+        self.mlp = Qwen2MLP(
+            dim=hidden_size,
+            hidden_dim=intermediate_size,
+            w_gate=w_gate,
+            w_up=w_up,
+            w_down=w_down,
+        )
 
     def __call__(
         self,
-        x: mx.array,
+        x: mx.array,  # [B, L, E]
         mask: mx.array | str | None = None,
     ) -> mx.array:
-        pass
+        x = x + self.gqa(self.input_layernorm(x), mask=mask)
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
 
 
 class Qwen2ModelWeek1:
-    def __init__(self, mlx_model: Any):
-        pass
+    def __init__(self, mlx_model: "Qwen2Model"):
+        precision = mx.float16
+        self.precision = precision
+
+        hidden_size = mlx_model.args.hidden_size
+        num_hidden_layers = mlx_model.args.num_hidden_layers
+        intermediate_size = mlx_model.args.intermediate_size
+        num_attention_heads = mlx_model.args.num_attention_heads
+        rms_norm_eps = mlx_model.args.rms_norm_eps
+        vocab_size = mlx_model.args.vocab_size
+        num_key_value_heads = mlx_model.args.num_key_value_heads
+        max_position_embeddings = mlx_model.args.max_position_embeddings
+        rope_theta = mlx_model.args.rope_theta
+        # rope_traditional = mlx_model.args.rope_traditional  (False)
+        # rope_scaling = mlx_model.args.rope_scaling  (None)
+        # tie_word_embeddings = mlx_model.args.tie_word_embeddings  (True)
+
+        def dequantize_astype(x):
+            return dequantize_linear(x).astype(precision)
+
+        self.embed_tokens = Embedding(
+            vocab_size=vocab_size,
+            embedding_dim=hidden_size,
+            weight=dequantize_astype(mlx_model.model.embed_tokens),
+        )
+        self.layers: list[Qwen2TransformerBlock] = []
+        for i in range(num_hidden_layers):
+            block = Qwen2TransformerBlock(
+                num_attention_heads=num_attention_heads,
+                num_kv_heads=num_key_value_heads,
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
+                rms_norm_eps=rms_norm_eps,
+                wq=dequantize_astype(mlx_model.model.layers[i].self_attn.q_proj),
+                wk=dequantize_astype(mlx_model.model.layers[i].self_attn.k_proj),
+                wv=dequantize_astype(mlx_model.model.layers[i].self_attn.v_proj),
+                wo=dequantize_astype(mlx_model.model.layers[i].self_attn.o_proj),
+                bq=mlx_model.model.layers[i].self_attn.q_proj.bias.astype(precision),
+                bk=mlx_model.model.layers[i].self_attn.k_proj.bias.astype(precision),
+                bv=mlx_model.model.layers[i].self_attn.v_proj.bias.astype(precision),
+                w_gate=dequantize_astype(mlx_model.model.layers[i].mlp.gate_proj),
+                w_up=dequantize_astype(mlx_model.model.layers[i].mlp.up_proj),
+                w_down=dequantize_astype(mlx_model.model.layers[i].mlp.down_proj),
+                w_input_layernorm=mlx_model.model.layers[
+                    i
+                ].input_layernorm.weight.astype(precision),
+                w_post_attention_layernorm=mlx_model.model.layers[
+                    i
+                ].post_attention_layernorm.weight.astype(precision),
+                max_seq_len=max_position_embeddings,
+                theta=rope_theta,
+            )
+            self.layers.append(block)
+
+        # final layernorm
+        self.norm = RMSNorm(
+            dim=hidden_size,
+            weight=mlx_model.model.norm.weight.astype(precision),
+            eps=rms_norm_eps,
+        )
 
     def __call__(
         self,
         inputs: mx.array,
     ) -> mx.array:
-        pass
+        x = self.embed_tokens(inputs)  # [N.., E]
+        for layer in self.layers:
+            x = layer(x, mask="causal")
+        x = self.norm(x)
+        x = self.embed_tokens.as_linear(x)  # [N.., vocab_size]
+        return x
