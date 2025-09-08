@@ -5,7 +5,7 @@ class RoPE:
     def __init__(
         self,
         dims: int,  # D
-        seq_len: int,  # L
+        seq_len: int,  # L (maximum)
         base: int = 10000,
         traditional: bool = False,
     ):
