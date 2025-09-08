@@ -25,7 +25,8 @@ def simple_generate(
     detokenizer.reset()
     while True:
         logits = _step(model, mx.array([tokens], dtype=mx.int32))
-        next_token = sampler(logits)[0]
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        next_token = sampler(logprobs)[0]
         tokens.append(int(next_token))
         if next_token == tokenizer.eos_token_id:
             break
