@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 import mlx.core as mx
 from .basics import linear, silu
 from .attention import scaled_dot_product_attention_grouped
@@ -11,9 +12,9 @@ from .quantize import dequantize_linear
 class Qwen2MultiHeadAttention:
     def __init__(
         self,
-        hidden_size: int,
-        num_heads: int,
-        num_kv_heads: int,
+        hidden_size: int,  # E
+        num_heads: int,  # H_q
+        num_kv_heads: int,  # H
         wq: mx.array,
         wk: mx.array,
         wv: mx.array,
@@ -24,14 +25,45 @@ class Qwen2MultiHeadAttention:
         max_seq_len: int = 32768,
         theta: int = 1000000,
     ):
-        pass
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        assert hidden_size % num_heads == 0
+        assert num_heads % num_kv_heads == 0
+
+        head_dim = wq.shape[0] // num_heads  # D
+        assert wq.shape == wo.T.shape == (num_heads * head_dim, hidden_size)
+        assert wk.shape == wv.shape == (num_kv_heads * head_dim, hidden_size)
+        self.wq = wq
+        self.wk = wk
+        self.wv = wv
+        self.wo = wo
+
+        assert bq.shape == (num_heads * head_dim,)
+        assert bk.shape == bv.shape == (num_kv_heads * head_dim,)
+        self.bq = bq
+        self.bk = bk
+        self.bv = bv
+
+        self.rope = RoPE(head_dim, max_seq_len, theta)
 
     def __call__(
         self,
         x: mx.array,
         mask: mx.array | str | None = None,
     ) -> mx.array:
-        pass
+        B, L, E = x.shape
+        q = linear(x, self.wq, self.bq).reshape(B, L, self.num_heads, -1)
+        k = linear(x, self.wk, self.bk).reshape(B, L, self.num_kv_heads, -1)
+        v = linear(x, self.wv, self.bv).reshape(B, L, self.num_kv_heads, -1)
+        q = self.rope(q)
+        k = self.rope(k)
+        q = q.swapaxes(-3, -2).astype(mx.float32)
+        k = k.swapaxes(-3, -2).astype(mx.float32)
+        v = v.swapaxes(-3, -2).astype(mx.float32)
+        y = scaled_dot_product_attention_grouped(q, k, v, mask=mask)
+        y = y.astype(x.dtype).swapaxes(-3, -2).reshape(B, L, -1)
+        return linear(y, self.wo)
 
 
 class Qwen2MLP:
