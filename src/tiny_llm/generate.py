@@ -1,5 +1,7 @@
 import mlx.core as mx
 from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+from .kv_cache import TinyKvFullCache
 from .qwen2_week1 import Qwen2ModelWeek1
 from .qwen2_week2 import Qwen2ModelWeek2
 from typing import Callable
@@ -38,4 +40,29 @@ def simple_generate_with_kv_cache(
     model: Qwen2ModelWeek2, tokenizer: TokenizerWrapper, prompt: str
 ) -> str:
     def _step(model, y, offset, kv_cache):
-        pass
+        output_logits = model(y, offset, kv_cache)
+        return output_logits[..., -1, :]
+
+    tokens: list[int] = list(tokenizer.encode(prompt, add_special_tokens=False))
+    detokenizer = tokenizer.detokenizer
+    detokenizer.reset()
+    kv_cache = [TinyKvFullCache() for _ in range(model.num_hidden_layers)]
+
+    # Prefill stage
+    logits = _step(model, mx.array([tokens], dtype=mx.int32), 0, kv_cache)
+
+    # Decode stage
+    while True:
+        next_token = mx.argmax(logits, axis=-1)[0]
+        tokens.append(int(next_token))
+        if next_token == tokenizer.eos_token_id:
+            break
+        detokenizer.add_token(int(next_token))
+        print(detokenizer.last_segment, end="", flush=True)
+
+        logits = _step(
+            model,
+            mx.array([[int(next_token)]], dtype=mx.int32),
+            len(tokens) - 1,
+            kv_cache,
+        )

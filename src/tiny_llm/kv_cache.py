@@ -6,8 +6,8 @@ import mlx.core as mx
 class TinyKvCache:
     def update_and_fetch(
         self,
-        key: mx.array,
-        value: mx.array,
+        key: mx.array,  # [B, L', H, D]
+        value: mx.array,  # [B, L', H, D]
         mask_length: int | None = None,
         mask: mx.array | str | None = None,
     ) -> tuple[mx.array, mx.array, int, Optional[mx.array]]:
@@ -87,8 +87,8 @@ class BatchingKvCache(TinyKvCache):
 
 class TinyKvFullCache(TinyKvCache):
     def __init__(self):
-        self.key_values = None
-        self.offset = 0
+        self.key_values: tuple[mx.array, mx.array] | None = None
+        self.offset: int = 0
 
     def update_and_fetch(
         self,
@@ -97,4 +97,13 @@ class TinyKvFullCache(TinyKvCache):
         mask_length: int | None = None,
         mask: mx.array | str | None = None,
     ) -> tuple[mx.array, mx.array, int, Optional[mx.array]]:
-        pass
+        if self.key_values is None:
+            self.key_values = (key, value)
+        else:
+            skey, svalue = self.key_values
+            self.key_values = (
+                mx.concatenate([skey, key], axis=1),
+                mx.concatenate([svalue, value], axis=1),
+            )
+
+        return self.key_values
