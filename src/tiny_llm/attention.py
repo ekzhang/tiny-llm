@@ -92,8 +92,10 @@ def scaled_dot_product_attention_grouped(
     attn_logits = mx.matmul(query, key.swapaxes(-2, -1)) * scale
     if mask is not None:
         if isinstance(mask, str) and mask == "causal":
-            mask = causal_mask(L_q, L_k, attn_logits.dtype)
-        attn_logits += mx.broadcast_to(mask, attn_logits.shape)
+            mask = mx.broadcast_to(
+                causal_mask(L_q, L_k, attn_logits.dtype), attn_logits.shape
+            )
+        attn_logits += mask.reshape(attn_logits.shape)
     attn_weights = softmax(attn_logits, axis=-1)
 
     return mx.matmul(attn_weights, value).reshape(*B, H_q, L_q, D)
